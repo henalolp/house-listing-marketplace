@@ -8,9 +8,14 @@ module dacademarket::house {
     use sui::transfer;
     use sui::event::{Self, Event};
 
-    // Error constants
-    const EAmountIncorrect: u64 = 0;
-    const ENotOwner: u64 = 1;
+    // Custom error type
+    struct HouseError {
+        code: u64,
+        message: String,
+    }
+
+    const E_AMOUNT_INCORRECT: HouseError = HouseError { code: 0, message: "Amount incorrect".to_string() };
+    const E_NOT_OWNER: HouseError = HouseError { code: 1, message: "Not the owner".to_string() };
 
     // Event types
     struct ListingCreated has copy, drop {
@@ -34,6 +39,11 @@ module dacademarket::house {
         price: u64,
     }
 
+    struct ProfitsTaken has copy, drop {
+        owner: address,
+        amount: u64,
+    }
+
     // Shared object, one instance of house accepts only 1 type of coin for all listings
     struct House<phantom COIN> has key {
         id: UID,
@@ -42,6 +52,11 @@ module dacademarket::house {
     }
 
     // Create a new house list
+    /// Creates a new house list that accepts a specific type of coin for all listings.
+    /// 
+    /// # Arguments
+    /// * `ctx` - The transaction context.
+
     public entry fun create<COIN>(ctx: &mut TxContext) {
         let id = object::new(ctx);
         let items = bag::new(ctx);
@@ -61,7 +76,15 @@ module dacademarket::house {
     }
 
     // List an item for sale
-    public entry fun list<T: key + store, COIN>(
+    /// Lists an item for sale in the marketplace.
+    /// 
+    /// # Arguments
+    /// * `house` - The house object.
+    /// * `item` - The item to be listed.
+    /// * `ask` - The asking price.
+    /// * `ctx` - The transaction context.
+
+    public entry fun list_item<T: key + store, COIN>(
         house: &mut House<COIN>,
         item: T,
         ask: u64,
@@ -86,7 +109,7 @@ module dacademarket::house {
     }
 
     // Delist an item
-    fun delist<T: key + store, COIN>(
+    fun delist_item<T: key + store, COIN>(
         house: &mut House<COIN>,
         item_id: ID,
         ctx: &mut TxContext,
@@ -97,7 +120,7 @@ module dacademarket::house {
             ask: _,
         } = bag::remove(&mut house.items, item_id);
 
-        assert!(tx_context::sender(ctx) == owner, ENotOwner);
+        assert!(tx_context::sender(ctx) == owner, E_NOT_OWNER.code);
 
         let item = ofield::remove(&mut id, true);
         object::delete(id);
@@ -112,17 +135,24 @@ module dacademarket::house {
     }
 
     // Delist an item and transfer it to the owner
+    /// Delists an item and transfers it back to the owner.
+    /// 
+    /// # Arguments
+    /// * `house` - The house object.
+    /// * `item_id` - The ID of the item to be delisted.
+    /// * `ctx` - The transaction context.
+
     public entry fun delist_and_take<T: key + store, COIN>(
         house: &mut House<COIN>,
         item_id: ID,
         ctx: &mut TxContext,
     ) {
-        let item = delist<T, COIN>(house, item_id, ctx);
+        let item = delist_item<T, COIN>(house, item_id, ctx);
         transfer::public_transfer(item, tx_context::sender(ctx));
     }
 
     // Buy an item
-    fun buy<T: key + store, COIN>(
+    fun buy_item<T: key + store, COIN>(
         house: &mut House<COIN>,
         item_id: ID,
         paid: Coin<COIN>,
@@ -134,7 +164,7 @@ module dacademarket::house {
             owner,
         } = bag::remove(&mut house.items, item_id);
 
-        assert!(ask == coin::value(&paid), EAmountIncorrect);
+        assert!(ask == coin::value(&paid), E_AMOUNT_INCORRECT.code);
 
         if (table::contains(&house.payments, owner)) {
             coin::join(
@@ -160,6 +190,14 @@ module dacademarket::house {
     }
 
     // Buy an item and transfer it to the buyer
+    /// Buys an item and transfers it to the buyer.
+    /// 
+    /// # Arguments
+    /// * `house` - The house object.
+    /// * `item_id` - The ID of the item to be bought.
+    /// * `paid` - The coin paid for the item.
+    /// * `ctx` - The transaction context.
+
     public entry fun buy_and_take<T: key + store, COIN>(
         house: &mut House<COIN>,
         item_id: ID,
@@ -167,10 +205,11 @@ module dacademarket::house {
         ctx: &mut TxContext,
     ) {
         transfer::public_transfer(
-            buy<T, COIN>(house, item_id, paid, ctx),
+            buy_item<T, COIN>(house, item_id, paid, ctx),
             tx_context::sender(ctx),
         )
     }
+
 
     // Take profits from selling items
     fun take_profits<COIN>(
@@ -181,24 +220,43 @@ module dacademarket::house {
     }
 
     // Take profits and transfer them to the sender
+    /// Takes profits from selling items and transfers them to the sender.
+    /// 
+    /// # Arguments
+    /// * `house` - The house object.
+    /// * `ctx` - The transaction context.
     public entry fun take_profits_and_keep<COIN>(
         house: &mut House<COIN>,
         ctx: &mut TxContext,
     ) {
         if let Some(profits) = take_profits(house, ctx) {
-            transfer::public_transfer(profits, tx_context::sender(ctx))
+            let amount = coin::value(&profits);
+            transfer::public_transfer(profits, tx_context::sender(ctx));
+            event::emit(ProfitsTaken {
+                owner: tx_context::sender(ctx),
+                amount,
+            });
         }
     }
 
     // Get the number of items listed by an owner
+    /// Gets the number of items listed by a specific owner.
+    /// 
+    /// # Arguments
+    /// * `house` - The house object.
+    /// * `owner` - The address of the owner.
+    /// 
+    /// # Returns
+    /// The number of items listed by the owner.
+
     public fun get_listed_item_count<COIN>(
         house: &House<COIN>,
         owner: address,
     ): u64 {
-        let count = 0;
+        let mut count = 0;
         bag::iter(&house.items, |_, listing| {
             if (listing.owner == owner) {
-                count = count + 1;
+                count += 1;
             }
         });
         count
